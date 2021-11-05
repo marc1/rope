@@ -1,39 +1,48 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const max_height = 60;
+const max_level: u8 = 9;
 
+// Path between two nodes
+const Link = struct {
+    width: usize,
+    node: *Node,
+};
 
-
-pub const Node = struct {
+const Node = struct {
     const Self = @This();
 
     val: u8,
-    next: []?*Node,
-    prev: []?*Node,
 
-    pub fn init(alc: *Allocator, val: u8) !Self {
-        var next = try alc.alloc(?*Node, max_height);
-        var prev = try alc.alloc(?*Node, max_height);
-        std.mem.set(?*Node, next, null);
-        std.mem.set(?*Node, prev, null);
+    level: u8, // Number of active levels in `next` and `prev`
+    next: []?Link,
+    prev: []?Link,
 
-        return Self {
-            .val = val,
-            .next = next,
-            .prev= prev,
-        };
+    fn init(alc: *Allocator, val: u8) !Self {
+        var res: Self = undefined;
+
+        res.val = val;
+
+        res.level = 0;
+
+        res.next = try alc.alloc(?Link, max_level);
+        std.mem.set(?Link, res.next, null);
+        res.prev = try alc.alloc(?Link, max_level);
+        std.mem.set(?Link, res.prev, null);
+
+        return res;
     }
 
-    pub fn init_ptr(alc: *Allocator, val: u8) !*Self {
-        var node = try alc.create(Self);
-        node.* = try Self.init(alc, val);
-        return node;
-    }
-
-    pub fn deinit(self: *Self, alc: *Allocator) void {
+    fn deinit(self: Self, alc: *Allocator) void {
         alc.free(self.next);
         alc.free(self.prev);
+    }
+
+    fn init_ptr(alc: *Allocator, val: u8) !*Self {
+        var node = try alc.create(Self);
+        node.* = try Self.init(alc, val);
+
+        return node;
     }
 };
 
@@ -41,100 +50,38 @@ pub const Rope = struct {
     const Self = @This();
 
     alc: *Allocator,
-    head: *Node,
-    tail: *Node,
-    height: u8,
     rng: std.rand.Random,
 
-    pub fn init(alc: *Allocator) !Self {
-        var head = try Node.init_ptr(alc, 2); //stx
-        var tail = try Node.init_ptr(alc, 3); //etx
+    head: *Node,
+    tail: *Node,
 
-        head.next[0] = tail;
-        tail.prev[0] = head;
+    level: u8, // Level of the tallest node
 
-        var rng = std.rand.Xoroshiro128.init(@bitCast(u64, std.time.milliTimestamp()));
+    pub fn init(alc: *Allocator, seed: u64) !Self {
+        var res: Self = undefined;
 
-        return Self {
-            .alc = alc,
-            .head = head,
-            .tail = tail,
-            .height = 1,
-            .rng = rng.random(),
-        };
+        res.alc = alc;
+        res.rng = std.rand.Xoroshiro128.init(seed).random();
+
+        res.head = try Node.init_ptr(alc, 0);
+        res.tail = try Node.init_ptr(alc, 0);
+
+        return res;
     }
 
-    pub fn deinit(self: Self) void {
-        var tmp = @as(?*Node, self.head);
-        while (tmp) |node| {
-            var next = node.next[0];
-            node.deinit(self.alc);
-            self.alc.destroy(node);
+    pub fn deinit(self: *Self) void {
+        var tmp = self.head.next[0];
+        while (tmp) |link| {
+            var next = link.node.next[0];
+            link.node.deinit(self.alc);
+            self.alc.destroy(link.node);
             tmp = next;
         }
-    }
 
-// bad but good enough
-pub fn random_height(self: Self) u8 {
-    var promote = self.rng.boolean();
+        self.head.deinit(self.alc);
+        self.alc.destroy(self.head);
 
-    var height: u8 = 1;
-    while ((height < (max_height - 1)) and promote) : (promote = self.rng.boolean()) {
-        height += 1;
-    }
-
-    return height;
-}
-
-    pub fn append(self: *Self, val: u8) !void {
-        var node = try Node.init_ptr(self.alc, val);
-
-        // ptr to last non-tail elem
-        // we know the `next` of this is just the tail,
-        // so no need to store. will be important for
-        // insertion in middle of seq.
-        var last = self.tail.prev[0].?; //safe unwrap
-
-        last.next[0] = node;
-        self.tail.prev[0] = node;
-        node.next[0] = self.tail;
-
-        // Now, insert to higher levels if needed.
-        // 1 <= height <= max_height
-        var height = self.random_height();
-
-        if (height != 1) {
-            // we need to make new levels
-            if(self.height < height) {
-                // say self.height = 1 and height=3
-                // so level 0 is inited, but levels 1,2 are not.
-                // self.height - height = 2, so up to level 2
-                var tmph: u8 = height;
-                while (tmph > self.height) : (tmph -= 1) {
-                    self.head.next[tmph-1] = self.tail;
-                    self.tail.prev[tmph-1] = self.head;
-                }
-                self.height = height;
-            }
-
-            var h: u8 = 2;
-            // a height of 1 corresponds to next[0]
-            while(h <= height) : (h += 1) {
-                last = self.tail.prev[h-1].?;
-                last.next[h-1] = node;
-                self.tail.prev[h-1] = node;
-                node.next[h-1] = self.tail;
-            }
-        }
-    }
-
-
-    pub fn print(self: *Self) void {
-        var tmp = self.head.next[0];
-        while (tmp) |node| : (tmp = node.next[0]) {
-            if(node == self.tail)
-                continue;
-            std.debug.print("{c}", .{node.val});
-        }
+        self.tail.deinit(self.alc);
+        self.alc.destroy(self.tail);
     }
 };
