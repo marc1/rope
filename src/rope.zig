@@ -1,7 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const max_height = 10;
+const max_height = 60;
+
+
 
 pub const Node = struct {
     const Self = @This();
@@ -42,6 +44,7 @@ pub const Rope = struct {
     head: *Node,
     tail: *Node,
     height: u8,
+    rng: std.rand.Random,
 
     pub fn init(alc: *Allocator) !Self {
         var head = try Node.init_ptr(alc, 2); //stx
@@ -50,11 +53,14 @@ pub const Rope = struct {
         head.next[0] = tail;
         tail.prev[0] = head;
 
+        var rng = std.rand.Xoroshiro128.init(@bitCast(u64, std.time.milliTimestamp()));
+
         return Self {
             .alc = alc,
             .head = head,
             .tail = tail,
             .height = 1,
+            .rng = rng.random(),
         };
     }
 
@@ -68,7 +74,18 @@ pub const Rope = struct {
         }
     }
 
-    // append
+// bad but good enough
+pub fn random_height(self: Self) u8 {
+    var promote = self.rng.boolean();
+
+    var height: u8 = 1;
+    while ((height < (max_height - 1)) and promote) : (promote = self.rng.boolean()) {
+        height += 1;
+    }
+
+    return height;
+}
+
     pub fn append(self: *Self, val: u8) !void {
         var node = try Node.init_ptr(self.alc, val);
 
@@ -81,11 +98,40 @@ pub const Rope = struct {
         last.next[0] = node;
         self.tail.prev[0] = node;
         node.next[0] = self.tail;
+
+        // Now, insert to higher levels if needed.
+        // 1 <= height <= max_height
+        var height = self.random_height();
+
+        if (height != 1) {
+            // we need to make new levels
+            if(self.height < height) {
+                // say self.height = 1 and height=3
+                // so level 0 is inited, but levels 1,2 are not.
+                // self.height - height = 2, so up to level 2
+                var tmph: u8 = height;
+                while (tmph > self.height) : (tmph -= 1) {
+                    self.head.next[tmph-1] = self.tail;
+                    self.tail.prev[tmph-1] = self.head;
+                }
+                self.height = height;
+            }
+
+            var h: u8 = 2;
+            // a height of 1 corresponds to next[0]
+            while(h <= height) : (h += 1) {
+                last = self.tail.prev[h-1].?;
+                last.next[h-1] = node;
+                self.tail.prev[h-1] = node;
+                node.next[h-1] = self.tail;
+            }
+        }
     }
 
+
     pub fn print(self: *Self) void {
-        var tmp = &self.head.next[0];
-        while (tmp.*) |node| : (tmp = &node.next[0]) {
+        var tmp = self.head.next[0];
+        while (tmp) |node| : (tmp = node.next[0]) {
             if(node == self.tail)
                 continue;
             std.debug.print("{c}", .{node.val});
