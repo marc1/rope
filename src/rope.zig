@@ -1,87 +1,141 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const max_level: u8 = 9;
+const max_level: u8 = 20;
 
-// Path between two nodes
 const Link = struct {
-    width: usize,
-    node: *Node,
+    to: *Node,
+    width: u8,
 };
 
 const Node = struct {
-    const Self = @This();
-
     val: u8,
 
-    level: u8, // Number of active levels in `next` and `prev`
+    level: u8,
     next: []?Link,
     prev: []?Link,
 
-    fn init(alc: *Allocator, val: u8) !Self {
-        var res: Self = undefined;
+    fn init(alc: *Allocator, val: u8) !Node {
+        var next = try alc.alloc(?Link, max_level);
+        std.mem.set(?Link, next, null);
 
-        res.val = val;
+        var prev = try alc.alloc(?Link, max_level);
+        std.mem.set(?Link, prev, null);
 
-        res.level = 0;
-
-        res.next = try alc.alloc(?Link, max_level);
-        std.mem.set(?Link, res.next, null);
-        res.prev = try alc.alloc(?Link, max_level);
-        std.mem.set(?Link, res.prev, null);
-
-        return res;
+        return Node{
+            .val = val,
+            .level = 0,
+            .next = next,
+            .prev= prev,
+        };
     }
 
-    fn deinit(self: Self, alc: *Allocator) void {
+    fn init_ptr(alc: *Allocator, val: u8) Allocator.Error!*Node {
+        var n = try alc.create(Node);
+        n.* = try Node.init(alc, val);
+
+        return n;
+    }
+
+    fn deinit(self: *Node, alc: *Allocator) void {
         alc.free(self.next);
         alc.free(self.prev);
-    }
-
-    fn init_ptr(alc: *Allocator, val: u8) !*Self {
-        var node = try alc.create(Self);
-        node.* = try Self.init(alc, val);
-
-        return node;
     }
 };
 
 pub const Rope = struct {
-    const Self = @This();
-
     alc: *Allocator,
-    rng: std.rand.Random,
+    rand: std.rand.Random,
 
     head: *Node,
     tail: *Node,
 
-    level: u8, // Level of the tallest node
+    pub fn init(alc: *Allocator, rand: std.rand.Random) Allocator.Error!Rope {
+        var head = try Node.init_ptr(alc, 0);
+        var tail = try Node.init_ptr(alc, 0);
 
-    pub fn init(alc: *Allocator, seed: u64) !Self {
-        var res: Self = undefined;
+        head.next[0] = Link{ .to = tail, .width = 1 };
+        tail.prev[0] = Link{ .to = head, .width = 1 };
 
-        res.alc = alc;
-        res.rng = std.rand.Xoroshiro128.init(seed).random();
-
-        res.head = try Node.init_ptr(alc, 0);
-        res.tail = try Node.init_ptr(alc, 0);
-
-        return res;
+        return Rope{
+            .alc = alc,
+            .rand = rand,
+            .head = head,
+            .tail = tail,
+        };
     }
 
-    pub fn deinit(self: *Self) void {
-        var tmp = self.head.next[0];
-        while (tmp) |link| {
-            var next = link.node.next[0];
-            link.node.deinit(self.alc);
-            self.alc.destroy(link.node);
-            tmp = next;
+    pub fn deinit(self: *Rope) void {
+        var next_opt = self.head.next[0];
+        while (next_opt) |next| {
+            next_opt = next.to.next[0];
+            next.to.deinit(self.alc);
+            self.alc.destroy(next.to);
         }
 
         self.head.deinit(self.alc);
         self.alc.destroy(self.head);
-
-        self.tail.deinit(self.alc);
-        self.alc.destroy(self.tail);
     }
+
+    pub fn print(self: Rope) void {
+        // This is how you traverse including the head
+        // But you should never need to
+        //var next_opt: ?Link = Link{ .to = self.head, .width = 0 };
+        
+        var next_opt = self.head.next[0];
+        while (next_opt) |next| : (next_opt = next.to.next[0]) {
+            std.debug.print("{c}", .{next.to.val});
+            if (next.to.next[0]) |next_next| {
+                if (next_next.to == self.tail)
+                    break;
+
+                std.debug.print(" -> ", .{});
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    fn random_level(self: Rope) void {
+        var flip = self.rand.boolean();
+
+        var level: u8 = 0;
+        while (flip and level < max_level) : (flip = self.rand.boolean())
+            level += 1;
+
+        return level;
+    }
+
+    pub fn prepend_to(self: *Rope, before: *Node, val: u8) !?*Node {
+        if (before.prev[0]) |prev| {
+            return try self.append_to(prev.to, val);
+        }
+
+        return null;
+    }
+
+    pub fn prepend(self: *Rope, val: u8) !?*Node {
+        return try self.append_to(self.head, val);
+    }
+
+    pub fn append_to(self: *Rope, after: *Node, val: u8) !?*Node {
+        if (after.next[0]) |next| {
+            var n = try Node.init_ptr(self.alc, val);
+
+            n.prev[0] = Link{ .to = after, .width = 1 };
+            n.next[0] = Link{ .to = next.to, .width = 1 };
+
+            after.next[0] = Link{ .to = n, .width = 1};
+
+            next.to.prev[0] = Link{ .to = n, .width = 1};
+
+            return n;
+        }
+
+        return null;
+    }
+
+    pub fn append(self: *Rope, val: u8) !?*Node {
+        return try self.prepend_to(self.tail, val);
+    }
+
 };
